@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>連線診斷</title>
+<style>
+body{font-family:-apple-system,sans-serif;margin:16px;line-height:1.5}
+button{font-size:18px;padding:10px 20px}
+.ok{color:#15803d}.bad{color:#b91c1c}.t{margin:10px 0;padding:8px;border:1px solid #ccc;border-radius:8px}
+pre{white-space:pre-wrap;word-break:break-all;font-size:13px}
+</style>
+</head>
+<body>
+<h2>連線診斷</h2>
+<p>請在 iPad「不開 VPN」時按下開始，等約 30 秒，把畫面截圖給我。</p>
+<button id="go">開始測試</button>
+<div id="out"></div>
+<script>
+const out=document.getElementById('out');
+function add(title,ok,detail){
+  const d=document.createElement('div');d.className='t';
+  d.innerHTML='<b class="'+(ok?'ok':'bad')+'">'+(ok?'✔ ':'✘ ')+title+'</b><pre>'+(detail||'')+'</pre>';
+  out.appendChild(d);
+}
+function testWS(url,ms){
+  return new Promise(res=>{
+    let done=false,t0=Date.now();
+    const fin=(ok,msg)=>{if(done)return;done=true;try{ws.close()}catch(e){};res({ok,msg:msg+'（'+(Date.now()-t0)+'ms）'})};
+    let ws;
+    try{ws=new WebSocket(url)}catch(e){return res({ok:false,msg:'建立失敗：'+e})}
+    ws.onopen=()=>fin(true,'WebSocket 已開啟');
+    ws.onmessage=e=>fin(true,'WebSocket 收到回應：'+String(e.data).slice(0,80));
+    ws.onerror=()=>fin(false,'WebSocket 錯誤');
+    ws.onclose=e=>fin(false,'WebSocket 關閉 code='+e.code);
+    setTimeout(()=>fin(false,'逾時'),ms);
+  });
+}
+function testICE(name,server,ms){
+  return new Promise(res=>{
+    const types={};let done=false;
+    let pc;
+    try{pc=new RTCPeerConnection({iceServers:[server]})}catch(e){return res({ok:false,msg:'建立失敗：'+e})}
+    const fin=()=>{if(done)return;done=true;pc.close();res({types})};
+    pc.onicecandidate=e=>{
+      if(!e.candidate){fin();return}
+      const m=/ typ (\w+)/.exec(e.candidate.candidate);
+      if(m)types[m[1]]=(types[m[1]]||0)+1;
+    };
+    pc.createDataChannel('x');
+    pc.createOffer().then(o=>pc.setLocalDescription(o)).catch(()=>fin());
+    setTimeout(fin,ms);
+  });
+}
+document.getElementById('go').onclick=async()=>{
+  out.innerHTML='';
+  add('頁面資訊',true,navigator.userAgent+'\nWebRTC：'+(typeof RTCPeerConnection));
+  // 1 HTTPS
+  try{
+    const r=await fetch('https://0.peerjs.com/peerjs/id?'+Date.now());
+    add('HTTPS 取得配對編號',r.ok,'HTTP '+r.status+' '+(await r.text()).slice(0,60));
+  }catch(e){add('HTTPS 取得配對編號',false,String(e))}
+  // 2 WebSocket
+  const w=await testWS('wss://0.peerjs.com/peerjs?key=peerjs&id=diag'+Math.random().toString(36).slice(2,8)+'&token=diag',8000);
+  add('WebSocket 連到配對伺服器（最關鍵）',w.ok,w.msg);
+  // 3 ICE
+  const list=[
+    ['Cloudflare STUN',{urls:'stun:stun.cloudflare.com:3478'}],
+    ['Google STUN',{urls:'stun:stun.l.google.com:19302'}],
+    ['小米 STUN',{urls:'stun:stun.miwifi.com:3478'}],
+    ['騰訊 STUN',{urls:'stun:stun.qq.com:3478'}],
+    ['peerjs TURN (UDP/3478)',{urls:'turn:eu-0.turn.peerjs.com:3478',username:'peerjs',credential:'peerjsp'}],
+    ['openrelay TURN 443',{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'}],
+    ['openrelay TURNS 443 (TLS)',{urls:'turns:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]
+  ];
+  for(const [name,s] of list){
+    const r=await testICE(name,s,7000);
+    const t=r.types||{};
+    const isTurn=String(s.urls).startsWith('turn');
+    const good=isTurn?!!t.relay:!!t.srflx;
+    add(name,good,r.msg||('候選類型：'+JSON.stringify(t)+(isTurn?'\n要有 relay 才算通':'\n要有 srflx 才算通')));
+  }
+  add('完成',true,'把整個畫面截圖給我');
+};
+</script>
+</body>
+</html>
